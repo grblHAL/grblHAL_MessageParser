@@ -82,7 +82,7 @@ typedef struct {
     uint8_t address;
     machine_state_t machine_state;
     uint8_t machine_substate;
-    uint8_t home_state;
+    axes_signals_t home_state;
     uint8_t feed_override; // size changed in latest version!
     uint8_t spindle_override;
     uint8_t spindle_stop;

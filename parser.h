@@ -82,12 +82,6 @@ typedef struct {
 } grbl_t;
 
 typedef struct {
-    float x;
-    float y;
-    float z;
-} coord_values_t;
-
-typedef struct {
     float rpm_programmed;
     float rpm_actual;
     spindle_state_t state;
@@ -96,60 +90,66 @@ typedef struct {
 typedef union {
     uint8_t value;
     struct {
-        uint8_t led0: 1,
-                led1: 1,
-                led2: 1,
-                led3: 1,
-                led4: 1,
-                led5: 1,
-                led6: 1,
-                led7: 1;
+        uint8_t led0 :1,
+                led1 :1,
+                led2 :1,
+                led3 :1,
+                led4 :1,
+                led5 :1,
+                led6 :1,
+                led7 :1;
     };
     struct {
-        uint8_t mode     :    1,
-                run      :     1,
-                hold     :    1,
-                spindle  : 1,
-                flood    :   1,
-                mist     :    1,
+        uint8_t mode     :1,
+                run      :1,
+                hold     :1,
+                spindle  :1,
+                flood    :1,
+                mist     :1,
                 tlo_refd :1,
-                unused7  : 1;
+                unused   :1;
     };
 } leds_t;
 
 typedef union {
     uint32_t flags;
     struct {
-        uint32_t mpg:            1,
-                 state:          1,
-                 xpos:           1,
-                 ypos:           1,
-                 zpos:           1,
-                 offset:         1,
-                 await_ack:      1,
-                 await_wco_ok:   1,
-                 leds :          1,
-                 dist :          1,
-                 message:        1,
-                 feed:           1,
-                 rpm:            1,
-                 alarm:          1,
-                 error:          1,
-                 xmode:          1,
-                 coolant:        1,
-                 spindle:        1,
-                 pins:           1,
-                 reset:          1,
+        uint32_t xpos           :1,
+                 ypos           :1,
+                 zpos           :1,
+                 apos           :1,
+                 bpos           :1,
+                 cpos           :1,
+                 upos           :1,
+                 vpos           :1,
+                 mpg            :1,
+                 state          :1,
+                 offset         :1,
+                 await_ack      :1,
+                 await_wco_ok   :1,
+                 leds           :1,
+                 dist           :1,
+                 message        :1,
+                 feed           :1,
+                 rpm            :1,
+                 alarm          :1,
+                 error          :1,
+                 xmode          :1,
+                 coolant        :1,
+                 spindle        :1,
+                 pins           :1,
+                 reset          :1,
                  feed_override  :1,
                  rapid_override :1,
-                 rpm_override:   1,
-                 jog_mode:       1,
+                 rpm_override   :1,
+                 jog_mode       :1,
                  tlo_reference  :1,
-                 unassigned     :7;
+                 unassigned     :2;
     };
 } changes_t;
 
 typedef struct {
+    uint8_t n_axis;
     grbl_t grbl;
     machine_coords_t position;
     machine_coords_t offset;
@@ -180,11 +180,11 @@ typedef void (*grbl_callback_ptr)(char *line);
 typedef union {
     uint8_t flags;
     struct {
-        uint32_t sd_card: 1,
-                 lathe:   1,
-                 tool_change: 1,
-                 is_loaded: 1,
-                 unassigned: 5;
+        uint32_t sd_card     :1,
+                 lathe       :1,
+                 tool_change :1,
+                 is_loaded   :1,
+                 unassigned  :5;
     };
 } grbl_options_t;
 

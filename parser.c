@@ -2,7 +2,7 @@
  * parser.c - collects, parses and dispatches lines of data from
  *            grbls serial output stream and/or i2c display protocol
  *
- * v0.0.5 / 2023-03-05 / (c) Io Engineering / Terje
+ * v0.0.5 / 2023-03-06 / (c) Io Engineering / Terje
  */
 
 /*
@@ -79,25 +79,28 @@ const RGBColor_t grblStateColor[NUMSTATES] = {
 };
 
 static grbl_data_t grbl_data = {
-    .changed          = (uint32_t)-1,
-    .position         = {0.0f, 0.0f, 0.0f},
-    .offset           = {0.0f, 0.0f, 0.0f},
-    .absDistance      = true,
-    .xModeDiameter    = false,
-    .override         = {0},
-    .grbl.state       = Unknown,
-    .grbl.state_color = White,
-    .grbl.state_text  = "",
-    .grbl.substate    = 0,
-    .mpgMode          = false,
-    .alarm            = 0,
-    .error            = 0,
-    .pins             = "",
-    .message          = "",
-    .useWPos          = false,
-    .awaitWCO         = true,
-    .spindle.state    = {0},
-    .coolant          = {0}
+    .n_axis               = 3,
+    .changed              = (uint32_t)-1,
+    .position             = {0.0f, 0.0f, 0.0f},
+    .offset               = {0.0f, 0.0f, 0.0f},
+    .absDistance          = true,
+    .xModeDiameter        = false,
+    .override.feed_rate   = 100,
+    .override.rapid_rate  = 100,
+    .override.spindle_rpm = 100,
+    .grbl.state           = Unknown,
+    .grbl.state_color     = White,
+    .grbl.state_text      = "",
+    .grbl.substate        = 0,
+    .mpgMode              = false,
+    .alarm                = 0,
+    .error                = 0,
+    .pins                 = "",
+    .message              = "",
+    .useWPos              = false,
+    .awaitWCO             = true,
+    .spindle.state        = {0},
+    .coolant              = {0}
 };
 
 #ifdef PARSER_SERIAL_ENABLE
@@ -980,12 +983,16 @@ void grblPollI2C (void)
                 break;
 
             case MachineMsg_Overrides:
-                if((grbl_data.changed.feed_override = grbl_data.override.feed_rate != ((overrides_t *)packet->msg)->feed_rate))
-                    grbl_data.override.feed_rate = ((overrides_t *)packet->msg)->feed_rate;
-                if((grbl_data.changed.rapid_override = grbl_data.override.rapid_rate != ((overrides_t *)packet->msg)->rapid_rate))
-                    grbl_data.override.rapid_rate = ((overrides_t *)packet->msg)->rapid_rate;
-                if((grbl_data.changed.rpm_override = grbl_data.override.spindle_rpm != ((overrides_t *)packet->msg)->spindle_rpm))
-                    grbl_data.override.spindle_rpm = ((overrides_t *)packet->msg)->spindle_rpm;
+                {
+                    overrides_t override;
+                    memcpy(&override, packet->msg, sizeof(overrides_t)); // RP2040 (ARM M0) hard faults on unaligned read
+                    if((grbl_data.changed.feed_override = grbl_data.override.feed_rate != override.feed_rate))
+                        grbl_data.override.feed_rate = override.feed_rate;
+                    if((grbl_data.changed.rapid_override = grbl_data.override.rapid_rate != override.rapid_rate))
+                        grbl_data.override.rapid_rate = override.rapid_rate;
+                    if((grbl_data.changed.rpm_override = grbl_data.override.spindle_rpm != override.spindle_rpm))
+                        grbl_data.override.spindle_rpm = override.spindle_rpm;
+                }
                 break;
 
             default:
