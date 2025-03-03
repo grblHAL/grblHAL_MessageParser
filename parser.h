@@ -2,7 +2,7 @@
  * parser.c - collects, parses and dispatches lines of data from
  *            grbls serial output stream and/or i2c display protocol
  *
- * v0.0.5 / 2023-03-05 / (c) Io Engineering / Terje
+ * v0.0.6 / 2023-08-11 / (c) Io Engineering / Terje
  */
 
 /*
@@ -144,7 +144,8 @@ typedef union {
                  rpm_override   :1,
                  jog_mode       :1,
                  tlo_reference  :1,
-                 unassigned     :2;
+                 auto_reporting :1,
+                 unassigned     :1;
     };
 } changes_t;
 
@@ -163,6 +164,8 @@ typedef struct {
     bool mpgMode;
     bool xModeDiameter;
     bool tloReferenced;
+    bool autoReporting;
+    uint32_t autoReportingInterval;
     jog_mode_t jog_mode;
     changes_t changed;
     uint8_t alarm;

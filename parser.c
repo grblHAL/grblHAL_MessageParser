@@ -2,12 +2,12 @@
  * parser.c - collects, parses and dispatches lines of data from
  *            grbls serial output stream and/or i2c display protocol
  *
- * v0.0.5 / 2023-03-06 / (c) Io Engineering / Terje
+ * v0.0.7 / 2025-02-27 / (c) Io Engineering / Terje
  */
 
 /*
 
-Copyright (c) 2018-2023, Terje Io
+Copyright (c) 2018-2025, Terje Io
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification,
@@ -311,26 +311,35 @@ static void parseOffsets (char *data)
     grbl_data.changed.await_wco_ok = grbl_data.awaitWCO;
 }
 
-
 static void parseOverrides (char *data)
 {
     char *next;
+    uint32_t value;
 
     next = strchr(data, ',');
     *next++ = '\0';
 
-    if(parseUint(&grbl_data.override.feed_rate, data))
+    value = grbl_data.override.feed_rate;
+    if(parseUint(&value, data)) {
         grbl_data.changed.feed_override = true;
+        grbl_data.override.feed_rate = (override_t)value;
+    }
 
     data = next;
     next = strchr(data, ',');
     *next++ = '\0';
 
-    if(parseUint(&grbl_data.override.rapid_rate, data))
+    value = grbl_data.override.rapid_rate;
+    if(parseUint(&value, data)) {
         grbl_data.changed.rapid_override = true;
+        grbl_data.override.rapid_rate = (override_t)value;
+    }
 
-    if(parseUint(&grbl_data.override.spindle_rpm, next))
+    value = grbl_data.override.spindle_rpm;
+    if(parseUint(&value, data)) {
         grbl_data.changed.rpm_override = true;
+        grbl_data.override.spindle_rpm = (override_t)value;
+    }
 }
 
 static void parseFeedSpeed (char *data)
@@ -464,7 +473,15 @@ static void parseData (char *block)
             } else if(!strncmp(line, "Ov:", 3))
                 parseOverrides(line + 3);
 
-            else if(!strncmp(line, "MPG:", 4)) {
+            else if(!strcmp(line, "AR") || !strncmp(line, "AR:", 3)) {
+                grbl_data.autoReporting = true;
+                if(line[2] == ':')
+                    grbl_data.changed.auto_reporting = parseUint(&grbl_data.autoReportingInterval, &line[3]);
+                else {
+                    grbl_data.changed.auto_reporting = grbl_data.autoReportingInterval != 0;
+                    grbl_data.autoReportingInterval = 0;
+                }
+            } else if(!strncmp(line, "MPG:", 4)) {
                 if((grbl_data.changed.mpg = grbl_data.mpgMode != (line[4] == '1'))) {
                     grbl_data.mpgMode = !grbl_data.mpgMode;
                     grbl_event.on_line_received = parseData;
@@ -907,6 +924,7 @@ static char *spins (control_signals_t signals)
 
 void grblPollI2C (void)
 {
+    uint_fast8_t idx;
     i2c_rxdata_t *i2c_msg; 
     grbl_state_t state;
     machine_status_packet_t *packet;
@@ -1005,14 +1023,15 @@ void grblPollI2C (void)
         }
     }
 
-    if((grbl_data.changed.xpos = grbl_data.position.x != packet->coordinate.x))
-        grbl_data.position.x = packet->coordinate.x + grbl_data.offset.x;
+    idx = grbl_data.n_axis;
 
-    if((grbl_data.changed.ypos = grbl_data.position.y != packet->coordinate.y))
-        grbl_data.position.y = packet->coordinate.y + grbl_data.offset.y;
-
-    if((grbl_data.changed.zpos = grbl_data.position.z != packet->coordinate.z))
-        grbl_data.position.z = packet->coordinate.z + grbl_data.offset.z;
+    do {
+        idx--;
+        if(grbl_data.position.values[idx] != packet->coordinate.values[idx]) {
+            grbl_data.changed.flags |= 1 << idx;
+            grbl_data.position.values[idx] = packet->coordinate.values[idx];
+        }
+    } while(idx);
 
     if((grbl_data.changed.feed = grbl_data.feed_rate != packet->feed_rate))
         grbl_data.feed_rate = packet->feed_rate;
