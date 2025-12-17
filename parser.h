@@ -1,13 +1,13 @@
 /*
- * parser.c - collects, parses and dispatches lines of data from
+ * parser.h - collects, parses and dispatches lines of data from
  *            grbls serial output stream and/or i2c display protocol
  *
- * v0.0.6 / 2023-08-11 / (c) Io Engineering / Terje
+ * v0.0.9 / 2025-12-17 / (c) Io Engineering / Terje
  */
 
 /*
 
-Copyright (c) 2018-2023, Terje Io
+Copyright (c) 2018-2025, Terje Io
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without modification,
@@ -37,20 +37,23 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 */
 
-#ifndef _GRBLCOMM_H_
-#define _GRBLCOMM_H_
+#pragma once
 
 #include <stddef.h>
 #include <stdbool.h>
 
 #include "grbl.h"
 #include "i2c_interface.h"
-#include "../LCD/colorRGB.h"
+
+//#define PARSER_ADD_COLOR
+//#define PARSER_SERIAL_ENABLE
+
+#ifdef PARSER_ADD_COLOR
+#include "colorRGB.h"
+#endif
 
 #define SERIAL_NO_DATA -1
 #define MAX_BLOCK_LENGTH 256
-
-//#define PARSER_SERIAL_ENABLE
 
 #define NUMSTATES 11
 
@@ -60,25 +63,13 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #define MAX_BLOCK_LENGTH 256
 
-typedef enum {
-    Unknown = 0,
-    Idle,
-    Run,
-    Jog,
-    Hold,
-    Alarm,
-    Check,
-    Door,
-    Tool,
-    Home,
-    Sleep
-} grbl_state_t;
-
 typedef struct {
-    grbl_state_t state;
+    system_state_t state;
     uint8_t substate;
-    RGBColor_t state_color;
     char state_text[8];
+#ifdef PARSER_ADD_COLOR
+    RGBColor_t state_color;
+#endif
 } grbl_t;
 
 typedef struct {
@@ -283,7 +274,5 @@ uint32_t lcd_systicks (void);
 extern int16_t serial_getC (void);
 extern void serial_writeLn (const char *data);
 extern void serial_RxCancel (void);
-
-#endif
 
 #endif

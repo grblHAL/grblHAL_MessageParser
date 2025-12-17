@@ -2,7 +2,7 @@
  * parser.c - collects, parses and dispatches lines of data from
  *            grbls serial output stream and/or i2c display protocol
  *
- * v0.0.7 / 2025-02-27 / (c) Io Engineering / Terje
+ * v0.0.9 / 2025-12-17 / (c) Io Engineering / Terje
  */
 
 /*
@@ -48,34 +48,42 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "parser.h"
 #include "i2c_interface.h"
 
-// This array must match the grbl_state_t enum in grblcomm.h!
-const char *const grblState[NUMSTATES] = {
-    "Unknown",
-    "Idle",
-    "Run",
-    "Jog",
-    "Hold",
-    "Alarm",
-    "Check",
-    "Door",
-    "Tool",
-    "Home",
-    "Sleep"
-};
+typedef struct {
+    system_state_t state;
+    const char *const text;
+#ifdef PARSER_ADD_COLOR
+    RGBColor_t color;
+#endif
+} grbl_states_t;
 
-// This array must match the grbl_state_t in parser.h!
-const RGBColor_t grblStateColor[NUMSTATES] = {
-    Black,
-    White,
-    LightGreen,
-    Yellow,
-    Coral,
-    Red,
-    Yellow,
-    Coral,
-    Yellow,
-    LightSkyBlue,
-    LightSkyBlue
+static const grbl_states_t grblstate[] = {
+#ifdef PARSER_ADD_COLOR
+    { SystemState_Idle,       "Idle",    White },
+    { SystemState_Alarm,      "Alarm",   Red },
+    { SystemState_CheckMode,  "Check",   Yellow },
+    { SystemState_Homing,     "Home",    LightSkyBlue },
+    { SystemState_Cycle,      "Run",     LightGreen },
+    { SystemState_Hold,       "Hold",    Coral },
+    { SystemState_Jog,        "Jog",     Yellow },
+    { SystemState_DoorOpen,   "Door",    Coral },
+    { SystemState_Sleep,      "Sleep",   LightSkyBlue },
+    { SystemState_EStop,      "EStop",   Red },
+    { SystemState_ToolChange, "Tool",    Yellow },
+    { SystemState_Undefined,  "",        Black }
+#else
+    { SystemState_Idle,       "Idle" },
+    { SystemState_Alarm,      "Alarm" },
+    { SystemState_CheckMode,  "Check" },
+    { SystemState_Homing,     "Home" },
+    { SystemState_Cycle,      "Run" },
+    { SystemState_Hold,       "Hold" },
+    { SystemState_Jog,        "Jog" },
+    { SystemState_DoorOpen,   "Door" },
+    { SystemState_Sleep,      "Sleep" },
+    { SystemState_EStop,      "EStop" },
+    { SystemState_ToolChange, "Tool" },
+    { SystemState_Undefined,  "" }
+#endif
 };
 
 static grbl_data_t grbl_data = {
@@ -88,8 +96,10 @@ static grbl_data_t grbl_data = {
     .override.feed_rate   = 100,
     .override.rapid_rate  = 100,
     .override.spindle_rpm = 100,
-    .grbl.state           = Unknown,
+    .grbl.state           = SystemState_Undefined,
+#ifdef PARSER_ADD_COLOR
     .grbl.state_color     = White,
+#endif
     .grbl.state_text      = "",
     .grbl.substate        = 0,
     .mpgMode              = false,
@@ -168,12 +178,12 @@ grbl_data_t *setGrblReceiveCallback (grbl_callback_ptr fn)
     return &grbl_data;
 }
 
-static void setLeds (grbl_state_t state)
+static void setLeds (system_state_t state)
 {
     leds_t leds = (leds_t){ grbl_data.leds.value };
 
-    leds.run = state == Run || state == Jog;
-    leds.hold = state == Hold;
+    leds.run = state == SystemState_Cycle || state == SystemState_Jog || state == SystemState_Homing;
+    leds.hold = state == SystemState_Hold;
     if(grbl_data.changed.leds = grbl_data.leds.value != leds.value)
         grbl_data.leds = leds;
 }
@@ -397,11 +407,11 @@ static void parseData (char *block)
 
                 setLeds(grbl_data.grbl.state);
 
-                if(!(grbl_data.grbl.state == Alarm || grbl_data.grbl.state == Tool) && grbl_data.message[0] != '\0')
+                if(!(grbl_data.grbl.state == SystemState_Alarm || grbl_data.grbl.state == SystemState_ToolChange) && grbl_data.message[0] != '\0')
                     grblClearMessage();
             }
 
-            if(grbl_data.alarm && grbl_data.grbl.state != Alarm)
+            if(grbl_data.alarm && grbl_data.grbl.state != SystemState_Alarm)
                 grblClearAlarm();
 
             line = strtok(NULL, "|");
@@ -634,11 +644,13 @@ bool grblParseState (char *data, grbl_t *grbl)
 
     if(len < sizeof(grbl->state_text) && strncmp(grbl->state_text, data, len)) {
         uint_fast8_t state = 0;
-        while(state < NUMSTATES) {
-            if((changed = !strcmp(data, grblState[state]))) {
-                grbl->state = (grbl_state_t)state;
+        while(grblstate[state].state != SystemState_Undefined) {
+            if((changed = !strcmp(data, grblstate[state].text))) {
+                grbl->state = grblstate[state].state;
                 grbl->substate = substate;
-                grbl->state_color = grblStateColor[state];
+#ifdef PARSER_ADD_COLOR
+                grbl->state_color = grblstate[state].color;
+#endif
                 strcpy(grbl->state_text, data);
                 break;
             }
@@ -926,158 +938,284 @@ void grblPollI2C (void)
 {
     uint_fast8_t idx;
     i2c_rxdata_t *i2c_msg; 
-    grbl_state_t state;
-    machine_status_packet_t *packet;
+    system_state_t state;
 
     if((i2c_msg = i2c_rx_poll()) == NULL)
         return;
 
-    if(i2c_msg->len < offsetof(machine_status_packet_t, msgtype))
+    if(i2c_msg->len < offsetof(machine_status_packet_v1_t, msgtype))
         return;
 
-    packet = (machine_status_packet_t *)i2c_msg->data;
+    if(!(*i2c_msg->data == 1 || *i2c_msg->data == 2))
+        return;
 
-    switch(packet->machine_state) {
+    if(*i2c_msg->data == 2) {
 
-        case MachineState_Alarm:
-            state = Alarm;
-            break;
+        machine_status_packet_t *packet;
 
-        case MachineState_Cycle:
-            state = Run;
-            if((grbl_data.changed.message = *grbl_data.message != '\0'))
-                *grbl_data.message = '\0';
-            break;
+        packet = (machine_status_packet_t *)i2c_msg->data;
 
-        case MachineState_Hold:
-            state = Hold;
-            break;
+        if((grbl_data.changed.state = grbl_data.grbl.state != packet->machine_state)) {
 
-        case MachineState_ToolChange:
-            state = Tool;
-            break;
+            grbl_data.grbl.state = packet->machine_state;
+            grbl_data.grbl.substate = packet->machine_substate;
+#ifdef PARSER_ADD_COLOR
+            grbl_data.grbl.state_color = grblstate[packet->machine_state].color;
+#endif
+            strcpy(grbl_data.grbl.state_text, grblstate[packet->machine_state].text);
+            setLeds(grbl_data.grbl.state);
+            if(grbl_data.grbl.state == SystemState_Cycle || grbl_data.grbl.state == SystemState_Jog) {
+                if((grbl_data.changed.message = *grbl_data.message != '\0'))
+                    *grbl_data.message = '\0';
+            }
+        }
 
-        case MachineState_Idle:
-            state = Idle;
-            break;
+        if(i2c_msg->len >= offsetof(machine_status_packet_t, msg) && packet->msgtype) {
 
-        case MachineState_Homing:
-            state = Home;
-            break;
+            switch(packet->msgtype) {
 
-        case MachineState_Jog:
-            state = Jog;
-            if((grbl_data.changed.message = *grbl_data.message != '\0'))
-                *grbl_data.message = '\0';
-            break;
+                case MachineMsg_ClearMessage:
+                    if((grbl_data.changed.message = *grbl_data.message != '\0'))
+                        *grbl_data.message = '\0';
+                    break;
 
-        default:
-            state = Unknown;
-            break;
-    }
+                case MachineMsg_WorkOffset:
+                    grbl_data.changed.offset = true;
+                    memcpy(&grbl_data.offset, (machine_coords_t *)packet->msg, sizeof(grbl_data.offset));
+                    break;
 
-    if((grbl_data.changed.state = grbl_data.grbl.state != state)) {
+                case MachineMsg_Overrides:
+                    {
+                        overrides_t override;
+                        memcpy(&override, packet->msg, sizeof(overrides_t)); // RP2040 (ARM M0) hard faults on unaligned read
+                        if((grbl_data.changed.feed_override = grbl_data.override.feed_rate != override.feed_rate))
+                            grbl_data.override.feed_rate = override.feed_rate;
+                        if((grbl_data.changed.rapid_override = grbl_data.override.rapid_rate != override.rapid_rate))
+                            grbl_data.override.rapid_rate = override.rapid_rate;
+                        if((grbl_data.changed.rpm_override = grbl_data.override.spindle_rpm != override.spindle_rpm))
+                            grbl_data.override.spindle_rpm = override.spindle_rpm;
+                    }
+                    break;
 
-        grbl_data.grbl.state = state;
-        grbl_data.grbl.substate = packet->machine_substate;
-        grbl_data.grbl.state_color = grblStateColor[state];
-        strcpy(grbl_data.grbl.state_text, grblState[state]);
+                default:
+                    if(packet->msgtype < 128) { // string message
+                        grbl_data.changed.message = true;
+                        packet->msg[packet->msgtype] = '\0';
+                        strcpy(grbl_data.message, (char *)packet->msg);
+                    } // else unhandled message type
+                    break;
+            }
+        }
 
-        setLeds(grbl_data.grbl.state);
-    }
+        if(grbl_data.n_axis == 3 && !isnanf(packet->coordinate.values[3]))
+            grbl_data.n_axis = 4;
 
-    if(i2c_msg->len >= offsetof(machine_status_packet_t, msg) && packet->msgtype) {
+        idx = grbl_data.n_axis;
 
-        switch(packet->msgtype) {
+        do {
+            idx--;
+            if(grbl_data.position.values[idx] != packet->coordinate.values[idx]) {
+                grbl_data.changed.flags |= 1 << idx;
+                grbl_data.position.values[idx] = packet->coordinate.values[idx];
+            }
+        } while(idx);
 
-            case MachineMsg_ClearMessage:
+        if((grbl_data.changed.feed = grbl_data.feed_rate != packet->feed_rate))
+        grbl_data.feed_rate = packet->feed_rate;
+
+        if((grbl_data.changed.error = grbl_data.error != packet->status_code))
+            grbl_data.error = packet->status_code;
+
+        if((grbl_data.changed.coolant = grbl_data.coolant.value != packet->coolant_state.value)) {
+            grbl_data.changed.leds = true;
+            grbl_data.leds.mist = packet->coolant_state.mist;
+            grbl_data.leds.flood = packet->coolant_state.flood;
+            grbl_data.coolant = packet->coolant_state;
+        }
+
+        if((grbl_data.changed.spindle = grbl_data.spindle.state.value != packet->spindle_state.value)) {
+            grbl_data.changed.leds = true;
+            if(!(grbl_data.leds.spindle = packet->spindle_state.on))
+                grbl_data.spindle.rpm_actual = 0.0f;
+            grbl_data.spindle.state = packet->spindle_state;
+        }
+
+        if((grbl_data.changed.rpm = (grbl_data.spindle.state.on ? grbl_data.spindle.rpm_actual : grbl_data.spindle.rpm_programmed) != (float)packet->spindle_rpm)) {
+            if(grbl_data.spindle.state.on)
+                grbl_data.spindle.rpm_actual = (float)packet->spindle_rpm;
+            else
+                grbl_data.spindle.rpm_programmed = (float)packet->spindle_rpm;
+        }
+
+        char *pins = spins(packet->signals);
+        if((grbl_data.changed.pins = !!strcmp(grbl_data.pins, pins)))
+            strcpy(grbl_data.pins, pins);
+
+        if((grbl_data.changed.mpg = grbl_data.mpgMode != packet->machine_modes.mpg))
+            grbl_data.mpgMode = packet->machine_modes.mpg;
+
+        if((grbl_data.changed.tlo_reference = grbl_data.tloReferenced != packet->machine_modes.tlo_referenced)) {
+            grbl_data.tloReferenced = packet->machine_modes.tlo_referenced;
+            grbl_data.changed.leds = true;
+            grbl_data.leds.tlo_refd = grbl_data.changed.tlo_reference;
+        }
+
+        if((grbl_data.changed.xmode = grbl_data.xModeDiameter != packet->machine_modes.diameter))
+            grbl_data.xModeDiameter = packet->machine_modes.diameter;
+
+        if((grbl_data.changed.jog_mode = grbl_data.jog_mode.value != packet->jog_mode.value))
+            grbl_data.jog_mode = packet->jog_mode;
+
+    } else { // v1
+
+        machine_status_packet_v1_t *packet;
+
+        packet = (machine_status_packet_v1_t *)i2c_msg->data;
+
+        switch(packet->machine_state) {
+
+            case MachineState_Alarm:
+                state = SystemState_Alarm;
+                break;
+
+            case MachineState_Cycle:
+                state = SystemState_Cycle;
                 if((grbl_data.changed.message = *grbl_data.message != '\0'))
                     *grbl_data.message = '\0';
                 break;
 
-            case MachineMsg_WorkOffset:
-                grbl_data.changed.offset = true;
-                memcpy(&grbl_data.offset, (machine_coords_t *)packet->msg, sizeof(grbl_data.offset));
+            case MachineState_Hold:
+                state = SystemState_Hold;
                 break;
 
-            case MachineMsg_Overrides:
-                {
-                    overrides_t override;
-                    memcpy(&override, packet->msg, sizeof(overrides_t)); // RP2040 (ARM M0) hard faults on unaligned read
-                    if((grbl_data.changed.feed_override = grbl_data.override.feed_rate != override.feed_rate))
-                        grbl_data.override.feed_rate = override.feed_rate;
-                    if((grbl_data.changed.rapid_override = grbl_data.override.rapid_rate != override.rapid_rate))
-                        grbl_data.override.rapid_rate = override.rapid_rate;
-                    if((grbl_data.changed.rpm_override = grbl_data.override.spindle_rpm != override.spindle_rpm))
-                        grbl_data.override.spindle_rpm = override.spindle_rpm;
-                }
+            case MachineState_ToolChange:
+                state = SystemState_ToolChange;
+                break;
+
+            case MachineState_Idle:
+                state = SystemState_Idle;
+                break;
+
+            case MachineState_Homing:
+                state = SystemState_Homing;
+                break;
+
+            case MachineState_Jog:
+                state = SystemState_Jog;
+                if((grbl_data.changed.message = *grbl_data.message != '\0'))
+                    *grbl_data.message = '\0';
                 break;
 
             default:
-                if(packet->msgtype < 128) { // string message
-                    grbl_data.changed.message = true;
-                    packet->msg[packet->msgtype] = '\0';
-                    strcpy(grbl_data.message, (char *)packet->msg);
-                } // else unhandled message type
+                state = SystemState_Undefined;
                 break;
         }
-    }
 
-    idx = grbl_data.n_axis;
+        if((grbl_data.changed.state = grbl_data.grbl.state != state)) {
 
-    do {
-        idx--;
-        if(grbl_data.position.values[idx] != packet->coordinate.values[idx]) {
-            grbl_data.changed.flags |= 1 << idx;
-            grbl_data.position.values[idx] = packet->coordinate.values[idx];
+            grbl_data.grbl.state = state;
+            grbl_data.grbl.substate = packet->machine_substate;
+#ifdef PARSER_ADD_COLOR
+            grbl_data.grbl.state_color = grblstate[state].color;
+#endif
+            strcpy(grbl_data.grbl.state_text, grblstate[state].text);
+
+            setLeds(grbl_data.grbl.state);
         }
-    } while(idx);
 
-    if((grbl_data.changed.feed = grbl_data.feed_rate != packet->feed_rate))
+        if(i2c_msg->len >= offsetof(machine_status_packet_v1_t, msg) && packet->msgtype) {
+
+            switch(packet->msgtype) {
+
+                case MachineMsg_ClearMessage:
+                    if((grbl_data.changed.message = *grbl_data.message != '\0'))
+                        *grbl_data.message = '\0';
+                    break;
+
+                case MachineMsg_WorkOffset:
+                    grbl_data.changed.offset = true;
+                    memcpy(&grbl_data.offset, (machine_coords_t *)packet->msg, sizeof(grbl_data.offset));
+                    break;
+
+                case MachineMsg_Overrides:
+                    {
+                        overrides_t override;
+                        memcpy(&override, packet->msg, sizeof(overrides_t)); // RP2040 (ARM M0) hard faults on unaligned read
+                        if((grbl_data.changed.feed_override = grbl_data.override.feed_rate != override.feed_rate))
+                            grbl_data.override.feed_rate = override.feed_rate;
+                        if((grbl_data.changed.rapid_override = grbl_data.override.rapid_rate != override.rapid_rate))
+                            grbl_data.override.rapid_rate = override.rapid_rate;
+                        if((grbl_data.changed.rpm_override = grbl_data.override.spindle_rpm != override.spindle_rpm))
+                            grbl_data.override.spindle_rpm = override.spindle_rpm;
+                    }
+                    break;
+
+                default:
+                    if(packet->msgtype < 128) { // string message
+                        grbl_data.changed.message = true;
+                        packet->msg[packet->msgtype] = '\0';
+                        strcpy(grbl_data.message, (char *)packet->msg);
+                    } // else unhandled message type
+                    break;
+            }
+        }
+
+        idx = grbl_data.n_axis;
+
+        do {
+            idx--;
+            if(grbl_data.position.values[idx] != packet->coordinate.values[idx]) {
+                grbl_data.changed.flags |= 1 << idx;
+                grbl_data.position.values[idx] = packet->coordinate.values[idx];
+            }
+        } while(idx);
+
+        if((grbl_data.changed.feed = grbl_data.feed_rate != packet->feed_rate))
         grbl_data.feed_rate = packet->feed_rate;
 
-    if((grbl_data.changed.error = grbl_data.error != packet->status_code))
-        grbl_data.error = packet->status_code;
+        if((grbl_data.changed.error = grbl_data.error != packet->status_code))
+            grbl_data.error = packet->status_code;
 
-    if((grbl_data.changed.coolant = grbl_data.coolant.value != packet->coolant_state.value)) {
-        grbl_data.changed.leds = true;
-        grbl_data.leds.mist = packet->coolant_state.mist;
-        grbl_data.leds.flood = packet->coolant_state.flood;
-        grbl_data.coolant = packet->coolant_state;
+        if((grbl_data.changed.coolant = grbl_data.coolant.value != packet->coolant_state.value)) {
+            grbl_data.changed.leds = true;
+            grbl_data.leds.mist = packet->coolant_state.mist;
+            grbl_data.leds.flood = packet->coolant_state.flood;
+            grbl_data.coolant = packet->coolant_state;
+        }
+
+        if((grbl_data.changed.spindle = grbl_data.spindle.state.value != packet->spindle_state.value)) {
+            grbl_data.changed.leds = true;
+            if(!(grbl_data.leds.spindle = packet->spindle_state.on))
+                grbl_data.spindle.rpm_actual = 0.0f;
+            grbl_data.spindle.state = packet->spindle_state;
+        }
+
+        if((grbl_data.changed.rpm = (grbl_data.spindle.state.on ? grbl_data.spindle.rpm_actual : grbl_data.spindle.rpm_programmed) != (float)packet->spindle_rpm)) {
+            if(grbl_data.spindle.state.on)
+                grbl_data.spindle.rpm_actual = (float)packet->spindle_rpm;
+            else
+                grbl_data.spindle.rpm_programmed = (float)packet->spindle_rpm;
+        }
+
+        char *pins = spins(packet->signals);
+        if((grbl_data.changed.pins = !!strcmp(grbl_data.pins, pins)))
+            strcpy(grbl_data.pins, pins);
+
+        if((grbl_data.changed.mpg = grbl_data.mpgMode != packet->machine_modes.mpg))
+            grbl_data.mpgMode = packet->machine_modes.mpg;
+
+        if((grbl_data.changed.tlo_reference = grbl_data.tloReferenced != packet->machine_modes.tlo_referenced)) {
+            grbl_data.tloReferenced = packet->machine_modes.tlo_referenced;
+            grbl_data.changed.leds = true;
+            grbl_data.leds.tlo_refd = grbl_data.changed.tlo_reference;
+        }
+
+        if((grbl_data.changed.xmode = grbl_data.xModeDiameter != packet->machine_modes.diameter))
+            grbl_data.xModeDiameter = packet->machine_modes.diameter;
+
+        if((grbl_data.changed.jog_mode = grbl_data.jog_mode.value != packet->jog_mode.value))
+            grbl_data.jog_mode = packet->jog_mode;
     }
-
-    if((grbl_data.changed.spindle = grbl_data.spindle.state.value != packet->spindle_state.value)) {
-        grbl_data.changed.leds = true;
-        if(!(grbl_data.leds.spindle = packet->spindle_state.on))
-            grbl_data.spindle.rpm_actual = 0.0f;
-        grbl_data.spindle.state = packet->spindle_state;
-    }
-
-    if((grbl_data.changed.rpm = (grbl_data.spindle.state.on ? grbl_data.spindle.rpm_actual : grbl_data.spindle.rpm_programmed) != (float)packet->spindle_rpm)) {
-        if(grbl_data.spindle.state.on)
-            grbl_data.spindle.rpm_actual = (float)packet->spindle_rpm;
-        else
-            grbl_data.spindle.rpm_programmed = (float)packet->spindle_rpm;
-    }
-
-    char *pins = spins(packet->signals);
-    if((grbl_data.changed.pins = !!strcmp(grbl_data.pins, pins)))
-        strcpy(grbl_data.pins, pins);
-
-    if((grbl_data.changed.mpg = grbl_data.mpgMode != packet->machine_modes.mpg))
-        grbl_data.mpgMode = packet->machine_modes.mpg;
-
-    if((grbl_data.changed.tlo_reference = grbl_data.tloReferenced != packet->machine_modes.tlo_referenced)) {
-        grbl_data.tloReferenced = packet->machine_modes.tlo_referenced;
-        grbl_data.changed.leds = true;
-        grbl_data.leds.tlo_refd = grbl_data.changed.tlo_reference;
-    }
-
-    if((grbl_data.changed.xmode = grbl_data.xModeDiameter != packet->machine_modes.diameter))
-        grbl_data.xModeDiameter = packet->machine_modes.diameter;
-
-    if((grbl_data.changed.jog_mode = grbl_data.jog_mode.value != packet->jog_mode.value))
-        grbl_data.jog_mode = packet->jog_mode;
 
     if(grbl_event.on_report_received && grbl_data.changed.flags)
         grbl_event.on_report_received(grbl_data.block);
